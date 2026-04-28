@@ -1,125 +1,173 @@
-import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, StatusBar, Text } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, View, TouchableOpacity, Text } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useSharedValue } from 'react-native-reanimated';
-import { useBreathingEngine } from './src/hooks/useBreathingEngine';
+import { Ionicons } from '@expo/vector-icons';
+import { useMindscapeSession } from './src/hooks/useMindscapeSession';
 import { BreathDetector } from './src/components/BreathDetector';
 import { MindscapeRenderer } from './src/components/MindscapeRenderer';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { PrivacyScreen } from './src/screens/PrivacyScreen';
+import { CalibrationScreen } from './src/screens/CalibrationScreen';
+import { ReadyScreen } from './src/screens/ReadyScreen';
+import { SummaryScreen } from './src/screens/SummaryScreen';
+
+type AppStep = 'privacy' | 'calibration' | 'ready' | 'session' | 'summary';
 
 export default function App() {
-  const { state, metrics, onBreathEvent } = useBreathingEngine();
-  const [currentPhase, setCurrentPhase] = useState<'Inhale' | 'Exhale' | 'Silence'>('Silence');
-  const [isCalibrating, setIsCalibrating] = useState(true);
+  const [step, setStep] = useState<AppStep>('privacy');
   const [isAudioLoading, setIsAudioLoading] = useState(true);
-
-  // Live RMS — written by BreathDetector every 100ms, read by MindscapeRenderer on UI thread
-  // SharedValue means ZERO React re-renders for the animation
+  
+  const isCalibration = step === 'calibration';
+  const { state, metrics, currentPhase, handleInference, isAwarenessMoment, reset } = useMindscapeSession(isCalibration);
   const rmsShared = useSharedValue(0);
 
-  const handlePhaseChange = useCallback((
-    phase: 'Inhale' | 'Exhale' | 'Silence',
-    duration: number,
-    depth: number
-  ) => {
-    setCurrentPhase(phase);
-    onBreathEvent(phase, duration, depth);
-  }, [onBreathEvent]);
-
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <SafeAreaProvider>
       <View style={styles.container}>
         <StatusBar hidden />
+        
+        {/* Background Audio/Mic Layer (Always Active when needed) */}
+        {step !== 'privacy' && step !== 'summary' && (
+          <BreathDetector key="permanent-ear" onInference={handleInference} rmsShared={rmsShared} />
+        )}
 
-        {/* Visual & Audio Engine — rmsShared drives ring animation on UI thread */}
-        <MindscapeRenderer
-          state={state}
-          rmsValue={rmsShared}
-          phase={currentPhase}
-          onAudioReady={() => setIsAudioLoading(false)}
-        />
+        {step === 'privacy' && (
+          <PrivacyScreen onContinue={() => setStep('calibration')} />
+        )}
 
-        {/* Microphone & Phase Detection */}
-        <BreathDetector
-          onPhaseChange={handlePhaseChange}
-          onCalibratingChange={setIsCalibrating}
-          rmsShared={rmsShared}
-        />
+        {step === 'calibration' && (
+          <CalibrationScreen 
+            rmsShared={rmsShared}
+            onComplete={() => setStep('ready')} 
+          />
+        )}
 
-        {/* Calibration & Loading Instruction Overlay */}
-        {(isCalibrating || isAudioLoading) && (
-          <View style={styles.calibrationOverlay}>
-            <Text style={styles.calibrationText}>
-              {isAudioLoading ? 'LOADING SOUNDSCAPE' : 'CALIBRATING ENVIRONMENT'}
-            </Text>
-            <Text style={styles.calibrationSubText}>
-              {isAudioLoading ? 'Preparing high-fidelity audio...' : 'Please remain still and quiet...'}
-            </Text>
+        {step === 'ready' && (
+          <ReadyScreen onStart={() => setStep('session')} />
+        )}
+
+        {step === 'session' && (
+          <View style={styles.sessionContainer}>
+            <MindscapeRenderer 
+              state={state} 
+              rmsValue={rmsShared} 
+              phase={currentPhase}
+              isAwarenessMoment={isAwarenessMoment} 
+              onAudioReady={() => setIsAudioLoading(false)}
+            />
+
+            {/* DASHBOARD HUD */}
+            <View style={styles.hud}>
+              <View style={styles.stateChip}>
+                <Text style={styles.stateLabel}>{state.toUpperCase()}</Text>
+              </View>
+              
+              <View style={styles.metricsRow}>
+                <View style={styles.metricItem}>
+                  <Text style={styles.metricValue}>{metrics.bpm.toFixed(1)}</Text>
+                  <Text style={styles.metricName}>BPM</Text>
+                </View>
+                <View style={styles.metricDivider} />
+                <View style={styles.metricItem}>
+                  <Text style={styles.metricValue}>{metrics.variance.toFixed(2)}</Text>
+                  <Text style={styles.metricName}>VAR</Text>
+                </View>
+                <View style={styles.metricDivider} />
+                <View style={styles.metricItem}>
+                  <Text style={styles.metricValue}>{metrics.ieRatio.toFixed(1)}</Text>
+                  <Text style={styles.metricName}>I/E</Text>
+                </View>
+              </View>
+            </View>
+            
+            <TouchableOpacity 
+              style={styles.exitButton} 
+              onPress={() => setStep('summary')}
+            >
+              <Ionicons name="close" size={24} color="rgba(255,255,255,0.4)" />
+            </TouchableOpacity>
           </View>
         )}
 
-        {/* HUD */}
-        <View style={styles.hud}>
-          <Text style={styles.stateText}>{state.toUpperCase()}</Text>
-          <View style={styles.metricsRow}>
-            <Text style={styles.metricText}>{Math.round(metrics.bpm)} BPM</Text>
-            <Text style={styles.metricDivider}>|</Text>
-            <Text style={styles.metricText}>I:E {metrics.ieRatio > 0 ? (1 / metrics.ieRatio).toFixed(1) : '--'}</Text>
-            <Text style={styles.metricDivider}>|</Text>
-            <Text style={styles.metricText}>VAR {metrics.variance.toFixed(2)}s</Text>
-          </View>
-        </View>
+        {step === 'summary' && (
+          <SummaryScreen onRestart={() => {
+            reset();
+            setStep('ready');
+          }} />
+        )}
       </View>
-    </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#050508' },
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  sessionContainer: {
+    flex: 1,
+  },
+  exitButton: {
+    position: 'absolute',
+    top: 60,
+    right: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
   hud: {
     position: 'absolute',
-    bottom: 50,
+    bottom: 60,
     width: '100%',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
   },
-  stateText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '300',
-    letterSpacing: 8,
-    marginBottom: 10,
+  stateChip: {
+    backgroundColor: 'rgba(0, 255, 102, 0.1)',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 102, 0.2)',
+    marginBottom: 24,
+  },
+  stateLabel: {
+    color: '#00FF66',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 2,
   },
   metricsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    opacity: 0.5,
-  },
-  metricText: { color: '#fff', fontSize: 10, fontWeight: '600' },
-  metricDivider: { color: '#fff', fontSize: 10, opacity: 0.3 },
-  calibrationOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(5, 5, 8, 0.9)',
     justifyContent: 'center',
+    width: '100%',
+    gap: 20,
+  },
+  metricItem: {
     alignItems: 'center',
-    zIndex: 2000,
   },
-  calibrationText: {
-    color: '#fff',
-    fontSize: 20,
+  metricValue: {
+    color: '#FFF',
+    fontSize: 24,
     fontWeight: '300',
-    letterSpacing: 4,
-    textAlign: 'center',
-    marginBottom: 10,
-    textShadowColor: 'rgba(255, 255, 255, 0.5)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 20,
+    fontFamily: 'monospace',
   },
-  calibrationSubText: {
-    color: '#fff',
-    fontSize: 12,
-    opacity: 0.5,
+  metricName: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 10,
     letterSpacing: 1,
-    textAlign: 'center',
+    marginTop: 2,
+  },
+  metricDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
 });

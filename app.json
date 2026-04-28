@@ -16,7 +16,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.dipalit2906.mindscape-v2",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "MindScape uses the microphone to detect your breathing cycles in real-time."
+        "NSMicrophoneUsageDescription": "Allow Mindscape to detect your breathing patterns."
       }
     },
     "android": {
@@ -47,7 +47,13 @@
           }
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "react-native-fast-tflite",
+        {
+          "microphonePermission": "Allow Mindscape to detect your breathing patterns."
+        }
+      ]
     ],
     "extra": {
       "eas": {

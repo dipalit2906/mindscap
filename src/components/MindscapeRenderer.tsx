@@ -1,207 +1,161 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, Dimensions } from 'react-native';
-import { Canvas, Circle, Group, BlurMask } from '@shopify/react-native-skia';
+import { Canvas, Circle, Group, BlurMask, RoundedRect, vec } from '@shopify/react-native-skia';
 import {
   useSharedValue,
   withTiming,
   useDerivedValue,
   SharedValue,
+  withSequence,
+  withDelay,
+  withRepeat,
+  Easing,
 } from 'react-native-reanimated';
-import { BreathingState } from '../hooks/useBreathingEngine';
+import { MindscapeState } from '../hooks/useMindscapeSession';
 import { AudioContext, BiquadFilterNode } from 'react-native-audio-api';
-import { Asset } from 'expo-asset';
-
-const AUDIO_ASSETS = {
-  [BreathingState.NARROWED]:   require('../../assets/audio/narrowed_texture.mp3'),
-  [BreathingState.TRANSITION]: require('../../assets/audio/transition_texture.mp3'),
-  [BreathingState.EXPANDED]:   require('../../assets/audio/expanded_base.mp3'),
-  [BreathingState.STABILISED]: require('../../assets/audio/stabilised_base.mp3'),
-  'Ney':                       require('../../assets/audio/ney_layer.mp3'),
-  'Breath':                    require('../../assets/audio/breath_whoosh.mp3'),
-};
 
 const { width, height } = Dimensions.get('window');
 const CX = width / 2;
 const CY = height / 2;
 
-const COLORS: Record<BreathingState, string> = {
-  [BreathingState.NARROWED]:   '#E53E3E',
-  [BreathingState.TRANSITION]: '#D69E2E',
-  [BreathingState.EXPANDED]:   '#0096C7',
-  [BreathingState.STABILISED]: '#38A169',
+const COLORS: Record<MindscapeState, string> = {
+  [MindscapeState.NARROWED]: '#FF7096', // Pink
+  [MindscapeState.TRANSITION]: '#FFB347', // Orange
+  [MindscapeState.EXPANDED]: '#00FF99', // Green
+  [MindscapeState.STABILISED]: '#00CED1', // Teal
 };
 
-export const MindscapeRenderer: React.FC<{
-  state: BreathingState;
-  rmsValue: SharedValue<number>; 
-  phase: 'Inhale' | 'Exhale' | 'Silence';
+interface RendererProps {
+  state: MindscapeState;
+  rmsValue: SharedValue<number>;
+  phase: string;
+  isAwarenessMoment: boolean;
   onAudioReady?: (ready: boolean) => void;
-}> = ({ state, rmsValue, phase, onAudioReady }) => {
+}
+
+export const MindscapeRenderer: React.FC<RendererProps> = ({
+  state,
+  rmsValue,
+  phase,
+  isAwarenessMoment,
+  onAudioReady
+}) => {
+  const [visualState, setVisualState] = useState(state);
   const audioContextRef = useRef<AudioContext | null>(null);
   const masterFilterRef = useRef<BiquadFilterNode | null>(null);
   const layers = useRef<Record<string, any>>({});
-  const stateRef = useRef(state);
-  const loadedCount = useRef(0);
-  const [isAudioReady, setIsAudioReady] = useState(false);
-  
-  useEffect(() => { stateRef.current = state; }, [state]);
+  const isReady = useRef(false);
 
-  const bgOpacity = useSharedValue(0.15);
-  const outerR = useDerivedValue(() => {
-    const cfgBaseR = stateRef.current === BreathingState.NARROWED ? 80 : 
-                     stateRef.current === BreathingState.TRANSITION ? 100 : 
-                     stateRef.current === BreathingState.EXPANDED ? 120 : 130;
-    return cfgBaseR + Math.min(rmsValue.value * 2500, 80);
-  }, [rmsValue]);
+  // Animation values
+  const rotation = useSharedValue(0);
+  const phaseScale = useSharedValue(1);
+  const awarenessPulse = useSharedValue(1);
 
-  const innerR = useDerivedValue(() => outerR.value * 0.45, [outerR]);
-
-  // 1. AUDIO ENGINE SETUP
   useEffect(() => {
-    let isMounted = true;
-    let ctx: AudioContext | null = null;
-
-    const setup = async () => {
-      // 500ms delay to ensure native TurboModule wiring is ready
-      await new Promise(r => setTimeout(r, 500));
-      if (!isMounted) return;
-
-      try {
-        ctx = new AudioContext();
-        audioContextRef.current = ctx;
-
-        const masterGain = ctx.createGain();
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.value = 800;
-        
-        masterGain.connect(filter);
-        filter.connect(ctx.destination);
-        masterFilterRef.current = filter;
-
-        const setupLayer = async (name: string, module: any, pan: number) => {
-          try {
-            const asset = Asset.fromModule(module);
-            await asset.downloadAsync();
-            const uri = asset.localUri || asset.uri;
-            if (!uri) throw new Error("No URI");
-
-            const response = await fetch(uri);
-            const arrayBuffer = await response.arrayBuffer();
-            const audioBuffer = await ctx!.decodeAudioData(arrayBuffer);
-            const source = ctx!.createBufferSource();
-            source.buffer = audioBuffer;
-            source.loop = true;
-            const gainNode = ctx!.createGain();
-            gainNode.gain.value = 0;
-            
-            if (ctx!.createStereoPanner) {
-              const panner = ctx!.createStereoPanner();
-              panner.pan.value = pan;
-              source.connect(gainNode).connect(panner).connect(masterGain);
-            } else {
-              source.connect(gainNode).connect(masterGain);
-            }
-            
-            source.start(0);
-            layers.current[name] = gainNode;
-          } catch (err) {
-            console.error(`Layer ${name} error:`, err);
-          } finally {
-            loadedCount.current += 1;
-            if (loadedCount.current === 6 && isMounted) {
-              setIsAudioReady(true);
-              onAudioReady?.(true);
-            }
-          }
-        };
-
-        await setupLayer(BreathingState.NARROWED, AUDIO_ASSETS[BreathingState.NARROWED], 0);
-        await setupLayer(BreathingState.TRANSITION, AUDIO_ASSETS[BreathingState.TRANSITION], -0.2);
-        await setupLayer(BreathingState.EXPANDED, AUDIO_ASSETS[BreathingState.EXPANDED], 0.2);
-        await setupLayer(BreathingState.STABILISED, AUDIO_ASSETS[BreathingState.STABILISED], 0);
-        await setupLayer('Ney', AUDIO_ASSETS['Ney'], 0.4);
-        await setupLayer('Breath', AUDIO_ASSETS['Breath'], -0.4);
-
-      } catch (err) {
-        console.error("Audio Engine Startup Error:", err);
-      }
-    };
-
-    setup();
-
-    return () => {
-      isMounted = false;
-      if (ctx) ctx.close();
-    };
+    rotation.value = withRepeat(
+      withTiming(Math.PI * 2, { duration: 15000, easing: Easing.linear }),
+      -1,
+      false
+    );
   }, []);
 
-  // 2. STATE SYNC
   useEffect(() => {
-    const ctx = audioContextRef.current;
-    if (!ctx || !isAudioReady) return;
-    const now = ctx.currentTime;
-    const fade = 4.0;
+    const timer = setTimeout(() => {
+      setVisualState(state);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [state]);
 
-    Object.entries(layers.current).forEach(([name, node]) => {
-      if (name === 'Breath' || name === 'Ney') return;
-      node.gain.linearRampToValueAtTime(0, now + fade);
-    });
-
-    if (layers.current[state]) {
-      layers.current[state].gain.linearRampToValueAtTime(0.6, now + fade);
-    }
-    bgOpacity.value = withTiming(state === BreathingState.NARROWED ? 0.4 : 0.15, { duration: 2500 });
-  }, [state, isAudioReady]);
-
-  // 3. EXTREME BREATH SYNC
   useEffect(() => {
-    const ctx = audioContextRef.current;
-    const filter = masterFilterRef.current;
-    if (!ctx || !filter || !isAudioReady) return;
-    const now = ctx.currentTime;
-
-    const neyMax: Record<BreathingState, number> = {
-      [BreathingState.NARROWED]: 0,
-      [BreathingState.TRANSITION]: 0.3,
-      [BreathingState.EXPANDED]: 0.7,
-      [BreathingState.STABILISED]: 1.0,
-    };
-
     if (phase === 'Inhale') {
-      filter.frequency.exponentialRampToValueAtTime(4500, now + 0.5);
-      if (layers.current[state]) layers.current[state].gain.linearRampToValueAtTime(1.0, now + 0.4);
-      if (layers.current['Ney']) layers.current['Ney'].gain.linearRampToValueAtTime(neyMax[state], now + 0.7);
-      
-      if (layers.current['Breath']) {
-        const b = layers.current['Breath'];
-        b.gain.setValueAtTime(0, now);
-        b.gain.linearRampToValueAtTime(0.5, now + 0.1);
-        b.gain.linearRampToValueAtTime(0, now + 0.5);
-      }
-    } else if (phase === 'Exhale') {
-      filter.frequency.exponentialRampToValueAtTime(300, now + 1.2);
-      if (layers.current[state]) layers.current[state].gain.linearRampToValueAtTime(0.1, now + 1.0);
-      if (layers.current['Ney']) layers.current['Ney'].gain.linearRampToValueAtTime(neyMax[state] * 0.15, now + 1.5);
+      phaseScale.value = withTiming(1.6, { duration: 1500 });
     } else {
-      filter.frequency.linearRampToValueAtTime(800, now + 1.5);
+      phaseScale.value = withTiming(1.0, { duration: 2500 });
     }
-  }, [phase, state, isAudioReady]);
+  }, [phase]);
+
+  useEffect(() => {
+    if (isAwarenessMoment) {
+      awarenessPulse.value = withSequence(
+        withTiming(1.4, { duration: 1000 }),
+        withTiming(1, { duration: 1000 })
+      );
+    }
+  }, [isAwarenessMoment]);
+
+  // Derived values for shapes
+  // Dampen the raw volume to prevent UI flickering/jittering
+  const breathAmp = useDerivedValue(() => Math.min(Math.sqrt(rmsValue.value) * 400, 100));
+  
+  // Base ring expands significantly on inhale (phaseScale)
+  const baseR = useDerivedValue(() => (90 + breathAmp.value) * phaseScale.value * awarenessPulse.value);
+  
+  // Generous spacing that expands naturally, matching the screenshot
+  const spacing = 18;
+  const ring1 = useDerivedValue(() => baseR.value + (spacing * 1) * phaseScale.value);
+  const ring2 = useDerivedValue(() => baseR.value + (spacing * 2) * phaseScale.value);
+  const ring3 = useDerivedValue(() => baseR.value + (spacing * 3) * phaseScale.value);
+  const ring4 = useDerivedValue(() => baseR.value + (spacing * 4) * phaseScale.value);
+  const ring5 = useDerivedValue(() => baseR.value + (spacing * 5) * phaseScale.value);
+  const ring6 = useDerivedValue(() => baseR.value + (spacing * 6) * phaseScale.value);
+
+  // --- AUDIO ENGINE ---
+  useEffect(() => {
+    let ctx: AudioContext | null = null;
+    const setup = async () => {
+      ctx = new AudioContext();
+      audioContextRef.current = ctx;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 800;
+      filter.connect(ctx.destination);
+      masterFilterRef.current = filter;
+      isReady.current = true;
+      onAudioReady?.(true);
+    };
+    setup();
+    return () => ctx?.close();
+  }, []);
+
+  useEffect(() => {
+    if (!isReady.current || !masterFilterRef.current || !audioContextRef.current) return;
+    const ctx = audioContextRef.current;
+    const now = ctx.currentTime;
+    const filter = masterFilterRef.current;
+    const fade = 2.5;
+
+    if (state === MindscapeState.NARROWED) filter.frequency.linearRampToValueAtTime(400, now + fade);
+    if (state === MindscapeState.EXPANDED) filter.frequency.linearRampToValueAtTime(2000, now + fade);
+    if (state === MindscapeState.STABILISED) filter.frequency.linearRampToValueAtTime(150, now + fade);
+  }, [state]);
 
   return (
     <View style={styles.container}>
       <Canvas style={styles.canvas}>
+        {/* Glow effect behind the main ring */}
         <Group>
-          <BlurMask blur={50} style="normal" />
-          <Circle cx={CX} cy={CY} r={outerR} color={COLORS[state]} opacity={bgOpacity} />
+          <BlurMask blur={30} style="normal" />
+          <Circle cx={CX} cy={CY} r={baseR} style="stroke" strokeWidth={20} color={COLORS[visualState]} opacity={0.3} />
         </Group>
-        <Circle cx={CX} cy={CY} r={innerR} color={COLORS[state]} opacity={0.9} />
+
+        {/* Main Thick Ring */}
+        <Circle cx={CX} cy={CY} r={baseR} style="stroke" strokeWidth={8} color={COLORS[visualState]} opacity={0.9}>
+          <BlurMask blur={2} style="solid" />
+        </Circle>
+
+        {/* 6 Thin Concentric Rings */}
+        <Circle cx={CX} cy={CY} r={ring1} style="stroke" strokeWidth={2} color={COLORS[visualState]} opacity={0.6} />
+        <Circle cx={CX} cy={CY} r={ring2} style="stroke" strokeWidth={1.5} color={COLORS[visualState]} opacity={0.4} />
+        <Circle cx={CX} cy={CY} r={ring3} style="stroke" strokeWidth={1} color={COLORS[visualState]} opacity={0.25} />
+        <Circle cx={CX} cy={CY} r={ring4} style="stroke" strokeWidth={1} color={COLORS[visualState]} opacity={0.15} />
+        <Circle cx={CX} cy={CY} r={ring5} style="stroke" strokeWidth={0.5} color={COLORS[visualState]} opacity={0.08} />
+        <Circle cx={CX} cy={CY} r={ring6} style="stroke" strokeWidth={0.5} color={COLORS[visualState]} opacity={0.04} />
       </Canvas>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#050508' },
+  container: { flex: 1, backgroundColor: '#050505' },
   canvas: { flex: 1 },
 });

@@ -1,89 +1,105 @@
-import React, { useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text } from 'react-native';
-import { useAudioRecorder, RecordingConfig, AudioAnalysis, AudioStudioModule } from '@siteed/expo-audio-studio';
-import { useInhaleExhaleDetector } from '../hooks/useInhaleExhaleDetector';
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, View, Text, Platform, PermissionsAndroid } from 'react-native';
+import LiveAudioStream from 'react-native-live-audio-stream';
 import { SharedValue } from 'react-native-reanimated';
+import { base64ToFloat32, calculateRMS, calculateZCR, calculateCentroid } from '../utils/dsp';
 
 interface BreathDetectorProps {
-  onPhaseChange: (phase: 'Inhale' | 'Exhale' | 'Silence', duration: number, depth: number) => void;
-  onCalibratingChange?: (isCalibrating: boolean) => void;
+  onInference: (rms: number, zcr: number, centroid: number, waveform?: Float32Array) => void;
   rmsShared: SharedValue<number>;
 }
 
-export const BreathDetector: React.FC<BreathDetectorProps> = ({ onPhaseChange, onCalibratingChange, rmsShared }) => {
-  const { startRecording, stopRecording, isRecording, prepareRecording } = useAudioRecorder();
+const WINDOW_SIZE = 15600; // Client requirement: 15600 samples (~0.97s)
 
-  // Keep a stable ref to the callback to prevent effect re-runs
-  const onPhaseChangeRef = useRef(onPhaseChange);
+export const BreathDetector: React.FC<BreathDetectorProps> = ({ onInference, rmsShared }) => {
+  const isRecording = React.useRef(false);
+  const slidingWindow = useRef<Float32Array>(new Float32Array(WINDOW_SIZE));
+  const [active, setActive] = React.useState(false);
+
+  const requestPermissions = async () => {
+    if (Platform.OS === 'android') {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: 'Microphone Permission',
+          message: 'Mindscape needs access to your mic to detect breathing.',
+          buttonNeutral: 'Ask Me Later',
+          buttonNegative: 'Cancel',
+          buttonPositive: 'OK',
+        }
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    }
+    return true;
+  };
+
+  const onInferenceRef = useRef(onInference);
+  const rmsSharedRef = useRef(rmsShared);
+  
   useEffect(() => {
-    onPhaseChangeRef.current = onPhaseChange;
-  }, [onPhaseChange]);
-
-  const { processFrame, currentPhase, depth, isCalibrating } = useInhaleExhaleDetector({
-    onPhaseChange: (p, dur, d) => onPhaseChangeRef.current(p, dur, d),
-    noiseFloor: 0.003,
-  });
-
-  useEffect(() => {
-    onCalibratingChange?.(isCalibrating);
-  }, [isCalibrating, onCalibratingChange]);
-
-  const handleAudioAnalysis = useCallback(async (analysis: AudioAnalysis) => {
-    if (!analysis.dataPoints || analysis.dataPoints.length === 0) return;
-    const lastPoint = analysis.dataPoints[analysis.dataPoints.length - 1];
-    if (!lastPoint.features) return;
-
-    const { rms = 0, zcr = 0, spectralCentroid = 0 } = lastPoint.features;
-    rmsShared.value = rms;
-    processFrame(rms, zcr, spectralCentroid);
-  }, [processFrame, rmsShared]);
+    onInferenceRef.current = onInference;
+    rmsSharedRef.current = rmsShared;
+  }, [onInference, rmsShared]);
 
   useEffect(() => {
     let isMounted = true;
 
-    const config: RecordingConfig = {
-      sampleRate: 44100,
+    const options = {
+      sampleRate: 16000,
       channels: 1,
-      encoding: 'pcm_16bit',
-      segmentDurationMs: 100,
-      enableProcessing: true,
-      onAudioAnalysis: handleAudioAnalysis,
-      features: { rms: true, zcr: true, spectralCentroid: true },
+      bitsPerSample: 16,
+      audioSource: 6,
+      bufferSize: 1024,
     };
 
     const setup = async () => {
-      try {
-        console.log('[MIC] Requesting permissions...');
-        const perm = await AudioStudioModule.requestPermissionsAsync();
-        if (!perm.granted || !isMounted) return;
+      const hasPermission = await requestPermissions();
+      if (!hasPermission || !isMounted) return;
 
-        console.log('[MIC] Preparing...');
-        await prepareRecording(config);
+      console.log('[STREAM] Initializing raw PCM ear...');
+      LiveAudioStream.init(options);
+
+      LiveAudioStream.on('data', (data: string) => {
+        if (!isMounted) return;
+
+        const samples = base64ToFloat32(data);
         
-        console.log('[MIC] Starting...');
-        await startRecording(config);
-        console.log('[MIC] Live and stable.');
-      } catch (err: any) {
-        console.error('[MIC] Failed to start:', err.message);
-      }
+        const newWindow = new Float32Array(WINDOW_SIZE);
+        newWindow.set(slidingWindow.current.subarray(samples.length));
+        newWindow.set(samples, WINDOW_SIZE - samples.length);
+        slidingWindow.current = newWindow;
+
+        const rms = calculateRMS(samples);
+        const zcr = calculateZCR(samples);
+        const centroid = calculateCentroid(samples);
+        
+        // Use the Ref for shared value - reduced smoothing for faster "live" feel
+        rmsSharedRef.current.value = (rmsSharedRef.current.value * 0.4) + (rms * 0.6);
+
+        // Use the Ref for inference to avoid dependency restart
+        onInferenceRef.current(rms, zcr, centroid, new Float32Array(slidingWindow.current));
+      });
+
+      console.log('[STREAM] Starting...');
+      LiveAudioStream.start();
+      isRecording.current = true;
+      setActive(true);
     };
 
     setup();
 
     return () => {
       isMounted = false;
-      console.log('[MIC] Stopping...');
-      stopRecording();
+      console.log('[STREAM] Stopping...');
+      LiveAudioStream.stop();
+      isRecording.current = false;
+      setActive(false);
     };
-    // CRITICAL: Empty dependency array ensures the mic NEVER restarts
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); 
+  }, []); // NO DEPENDENCIES = STABLE FOREVER
 
   return (
     <View style={styles.debugPanel}>
-      <Text style={styles.debugText}>Mic: {isRecording ? '🟢 STABLE' : '🔴 OFF'}</Text>
-      <Text style={styles.debugText}>Phase: {currentPhase.toUpperCase()}</Text>
-      <Text style={styles.debugText}>Depth: {(depth * 100).toFixed(0)}%</Text>
+      <Text style={styles.debugText}>PCM Ear: {active ? '🟢 16kHz' : '🔴 OFF'}</Text>
     </View>
   );
 };
@@ -91,16 +107,17 @@ export const BreathDetector: React.FC<BreathDetectorProps> = ({ onPhaseChange, o
 const styles = StyleSheet.create({
   debugPanel: {
     position: 'absolute',
-    top: 50,
-    left: 20,
+    bottom: 40,
+    right: 20,
     backgroundColor: 'rgba(0,0,0,0.6)',
-    padding: 10,
-    borderRadius: 8,
-    zIndex: 1000,
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
   debugText: {
-    color: '#00ff00',
-    fontSize: 11,
-    fontFamily: 'monospace',
+    color: '#00FF00',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
 });
