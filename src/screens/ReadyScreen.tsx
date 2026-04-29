@@ -5,9 +5,11 @@ import { Ionicons } from '@expo/vector-icons';
 
 interface ReadyScreenProps {
   onStart: () => void;
+  sensingMode: 'mic' | 'touch';
+  onModeChange: (mode: 'mic' | 'touch') => void;
 }
 
-export const ReadyScreen: React.FC<ReadyScreenProps> = ({ onStart }) => {
+export const ReadyScreen: React.FC<ReadyScreenProps> = ({ onStart, sensingMode, onModeChange }) => {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -19,17 +21,31 @@ export const ReadyScreen: React.FC<ReadyScreenProps> = ({ onStart }) => {
         <Text style={styles.subtitle}>Session stays local on your device.</Text>
         
         <View style={styles.modeContainer}>
-          <TouchableOpacity style={styles.modeCard}>
-            <BlurView intensity={20} tint="dark" style={styles.modeBlur}>
-              <Ionicons name="mic-outline" size={24} color="#00FF66" />
-              <Text style={styles.modeText}>MIC</Text>
+          <TouchableOpacity 
+            style={[styles.modeCard, sensingMode === 'mic' ? styles.activeMode : styles.inactiveMode]}
+            onPress={() => onModeChange('mic')}
+          >
+            <BlurView intensity={sensingMode === 'mic' ? 40 : 10} tint="dark" style={styles.modeBlur}>
+              <Ionicons 
+                name="mic-outline" 
+                size={24} 
+                color={sensingMode === 'mic' ? '#00FF66' : 'rgba(255,255,255,0.3)'} 
+              />
+              <Text style={[styles.modeText, sensingMode !== 'mic' && styles.inactiveText]}>MIC</Text>
             </BlurView>
           </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.modeCard, styles.inactiveMode]}>
-            <BlurView intensity={10} tint="dark" style={styles.modeBlur}>
-              <Ionicons name="hand-right-outline" size={24} color="rgba(255,255,255,0.3)" />
-              <Text style={[styles.modeText, styles.inactiveText]}>TOUCH</Text>
+          <TouchableOpacity 
+            style={[styles.modeCard, sensingMode === 'touch' ? styles.activeModeTouch : styles.inactiveMode]}
+            onPress={() => onModeChange('touch')}
+          >
+            <BlurView intensity={sensingMode === 'touch' ? 40 : 10} tint="dark" style={styles.modeBlur}>
+              <Ionicons 
+                name="hand-right-outline" 
+                size={24} 
+                color={sensingMode === 'touch' ? '#FFB347' : 'rgba(255,255,255,0.3)'} 
+              />
+              <Text style={[styles.modeText, sensingMode === 'touch' ? { color: '#FFB347' } : styles.inactiveText]}>TOUCH</Text>
             </BlurView>
           </TouchableOpacity>
         </View>
@@ -83,7 +99,13 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(0, 255, 102, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  activeMode: {
+    borderColor: '#00FF66',
+  },
+  activeModeTouch: {
+    borderColor: '#FFB347',
   },
   inactiveMode: {
     borderColor: 'rgba(255,255,255,0.1)',

@@ -58,7 +58,7 @@ export const CalibrationScreen: React.FC<CalibrationScreenProps> = ({ rmsShared,
       <View style={styles.footer}>
         <Text style={styles.instruction}>Sending your neural rhythm...</Text>
         <Text style={styles.subInstruction}>Please remain still and maintain a steady breath. We are optimizing your sensory landscape for depth.</Text>
-        
+
         <View style={styles.progressBar}>
           <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
         </View>

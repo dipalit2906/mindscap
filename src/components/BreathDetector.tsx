@@ -9,7 +9,9 @@ interface BreathDetectorProps {
   rmsShared: SharedValue<number>;
 }
 
-const WINDOW_SIZE = 15600; // Client requirement: 15600 samples (~0.97s)
+// Must match the TFLite model input shape: [15600]
+const WINDOW_SIZE = 15600;
+const SAMPLING_RATE = 16000;
 
 export const BreathDetector: React.FC<BreathDetectorProps> = ({ onInference, rmsShared }) => {
   const isRecording = React.useRef(false);
@@ -35,7 +37,7 @@ export const BreathDetector: React.FC<BreathDetectorProps> = ({ onInference, rms
 
   const onInferenceRef = useRef(onInference);
   const rmsSharedRef = useRef(rmsShared);
-  
+
   useEffect(() => {
     onInferenceRef.current = onInference;
     rmsSharedRef.current = rmsShared;
@@ -45,11 +47,11 @@ export const BreathDetector: React.FC<BreathDetectorProps> = ({ onInference, rms
     let isMounted = true;
 
     const options = {
-      sampleRate: 16000,
+      sampleRate: SAMPLING_RATE,
       channels: 1,
       bitsPerSample: 16,
-      audioSource: 6,
-      bufferSize: 1024,
+      audioSource: 1,
+      bufferSize: 512,
     };
 
     const setup = async () => {
@@ -63,16 +65,25 @@ export const BreathDetector: React.FC<BreathDetectorProps> = ({ onInference, rms
         if (!isMounted) return;
 
         const samples = base64ToFloat32(data);
-        
+
         const newWindow = new Float32Array(WINDOW_SIZE);
-        newWindow.set(slidingWindow.current.subarray(samples.length));
-        newWindow.set(samples, WINDOW_SIZE - samples.length);
+
+        // Sliding window: keep the tail of the previous window and append the newest PCM chunk.
+        // This avoids filling the model input with large zero "holes".
+        if (samples.length >= WINDOW_SIZE) {
+          // Unusually large chunk: keep only the last WINDOW_SIZE samples.
+          newWindow.set(samples.subarray(samples.length - WINDOW_SIZE), 0);
+        } else {
+          const keep = WINDOW_SIZE - samples.length;
+          newWindow.set(slidingWindow.current.subarray(WINDOW_SIZE - keep), 0);
+          newWindow.set(samples, keep);
+        }
         slidingWindow.current = newWindow;
 
         const rms = calculateRMS(samples);
         const zcr = calculateZCR(samples);
         const centroid = calculateCentroid(samples);
-        
+
         // Use the Ref for shared value - reduced smoothing for faster "live" feel
         rmsSharedRef.current.value = (rmsSharedRef.current.value * 0.4) + (rms * 0.6);
 
