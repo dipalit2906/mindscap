@@ -310,7 +310,7 @@ export const useMindscapeSession = (isCalibration: boolean = false) => {
 
       // 2. DIFFERENTIAL DETECTION (Ultra-sensitive trend)
       const lastRms = floorBuffer.current.length > 0 ? floorBuffer.current[floorBuffer.current.length - 1] : sRms;
-      const isRising = sRms > adaptiveFloor.current && sRms > lastRms * 1.02;
+      const isRising = sRms > adaptiveFloor.current && sRms > lastRms * 1.05;
       floorBuffer.current.push(sRms);
       if (floorBuffer.current.length > 10) floorBuffer.current.shift();
 
@@ -374,8 +374,9 @@ export const useMindscapeSession = (isCalibration: boolean = false) => {
       }
 
       if (activePhase === 'Silence') {
+        const silenceDuration = now - lastPhaseStartTime.current;
         // Require a stronger rise + a short consistency window before starting inhale.
-        if (sRms > adaptiveFloor.current * 1.2 && isHumanBreathStart) {
+        if (silenceDuration > 500 && sRms > adaptiveFloor.current * 1.2 && isHumanBreathStart) {
           dropCounter.current++;
           if (dropCounter.current >= 3) { // Reduced from 6 to 3 for ~300ms responsiveness
             nextPhase = 'Inhale';
@@ -479,6 +480,7 @@ export const useMindscapeSession = (isCalibration: boolean = false) => {
       phaseRef.current = nextPhase;
       setCurrentPhase(nextPhase);
       lastPhaseStartTime.current = nowTime;
+      dropCounter.current = 0;
 
       if (activePhase === 'Inhale') {
         accumulatedInhaleTime.current += duration;
@@ -505,7 +507,7 @@ export const useMindscapeSession = (isCalibration: boolean = false) => {
           // NOISE FILTER: Ignore unrealistically fast cycles (< 2.8s)
           // Also ignore cycles that were forced by a safety reset (> 11s inhale)
           if (cycleToUse > 2800 && lastInhaleDuration.current < 11000) {
-            cycleDurations.current.push(activeDuration);
+            cycleDurations.current.push(cycleToUse);
             cycleTimestamps.current.push(currentCycleStart); // Record the start of this successful breath
             if (cycleTimestamps.current.length > 20) cycleTimestamps.current.shift();
 
